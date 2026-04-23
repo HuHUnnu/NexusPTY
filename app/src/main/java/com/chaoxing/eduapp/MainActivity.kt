@@ -1,4 +1,4 @@
-package com.nexus.tools
+package com.chaoxing.eduapp
 
 import android.net.Uri
 import android.os.Bundle
@@ -40,7 +40,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.nexus.tools.ui.*
+import com.chaoxing.eduapp.ui.*
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
@@ -152,7 +152,7 @@ fun NexusApp() {
                 onToggleExpand = { consoleExpanded = !consoleExpanded },
                 onClear = { logLines = emptyList(); engine.clearLog() },
                 onSendInput = { engine.sendInput(it) },
-                modifier = if (consoleExpanded) Modifier.weight(1f) else Modifier.height(260.dp)
+                modifier = if (consoleExpanded) Modifier.weight(1f) else Modifier.height(300.dp)
             )
 
             ControlBar(
@@ -192,36 +192,21 @@ private fun AppHeader(
                     .clip(RoundedCornerShape(10.dp))
                     .background(
                         Brush.linearGradient(
-                            colors = listOf(Cyan, Purple),
+                            colors = listOf(Color(0xFF4A90D9), Color(0xFF67B8DE)),
                             start = Offset.Zero,
                             end = Offset(36f, 36f)
                         )
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                Text("N", color = Color.White, fontWeight = FontWeight.Black, fontSize = 18.sp)
+                Icon(Icons.Filled.School, null, tint = Color.White, modifier = Modifier.size(20.dp))
             }
 
             Spacer(Modifier.width(12.dp))
 
             Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Nexus", style = MaterialTheme.typography.headlineMedium)
-                    Spacer(Modifier.width(8.dp))
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = Cyan.copy(alpha = .12f)
-                    ) {
-                        Text(
-                            "v1.0",
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
-                            color = Cyan,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-                Text("Process Manager", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                Text("学习通", style = MaterialTheme.typography.headlineMedium)
+                Text("智慧学习平台", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
             }
 
             IconButton(onClick = onImport) {
@@ -359,7 +344,6 @@ private fun ScriptPanel(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ScriptItem(
     script: ScriptInfo,
@@ -367,8 +351,6 @@ private fun ScriptItem(
     onClick: () -> Unit,
     onDelete: () -> Unit
 ) {
-    var showMenu by remember { mutableStateOf(false) }
-
     val borderColor by animateColorAsState(
         if (isSelected) Cyan.copy(alpha = .5f) else Border.copy(alpha = .4f), label = "border"
     )
@@ -380,16 +362,12 @@ private fun ScriptItem(
         onClick = onClick,
         shape = RoundedCornerShape(14.dp),
         color = bgColor,
-        border = BorderStroke(1.dp, borderColor),
-        modifier = Modifier.combinedClickable(
-            onClick = onClick,
-            onLongClick = { showMenu = true }
-        )
+        border = BorderStroke(1.dp, borderColor)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
+                .padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
@@ -422,7 +400,7 @@ private fun ScriptItem(
                 )
             }
 
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(4.dp))
 
             Box(
                 modifier = Modifier
@@ -441,18 +419,19 @@ private fun ScriptItem(
                 }
             }
 
-            DropdownMenu(
-                expanded = showMenu,
-                onDismissRequest = { showMenu = false }
+            Surface(
+                onClick = onDelete,
+                modifier = Modifier.size(36.dp),
+                shape = CircleShape,
+                color = Red.copy(alpha = .08f)
             ) {
-                DropdownMenuItem(
-                    text = { Text("Delete", color = Red) },
-                    onClick = {
-                        showMenu = false
-                        onDelete()
-                    },
-                    leadingIcon = { Icon(Icons.Filled.Delete, null, tint = Red, modifier = Modifier.size(18.dp)) }
-                )
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    Icon(
+                        Icons.Outlined.Close, null,
+                        tint = Red.copy(alpha = .7f),
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
             }
         }
     }
@@ -600,8 +579,8 @@ private fun ConsolePanel(
                         modifier = Modifier
                             .fillMaxWidth()
                             .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         val quickKeys = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "y", "n", "Enter")
                         quickKeys.forEach { key ->
@@ -609,23 +588,23 @@ private fun ConsolePanel(
                                 onClick = {
                                     onSendInput(if (key == "Enter") "" else key)
                                 },
-                                shape = RoundedCornerShape(8.dp),
+                                shape = RoundedCornerShape(10.dp),
                                 color = if (key == "Enter") Cyan.copy(alpha = .15f) else SurfaceCard,
                                 border = BorderStroke(
                                     0.5.dp,
                                     if (key == "Enter") Cyan.copy(alpha = .3f) else Border.copy(alpha = .4f)
                                 ),
-                                modifier = Modifier.height(32.dp)
+                                modifier = Modifier.height(38.dp)
                             ) {
                                 Box(
-                                    modifier = Modifier.padding(horizontal = 12.dp),
+                                    modifier = Modifier.padding(horizontal = 14.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Text(
                                         key,
                                         color = if (key == "Enter") Cyan else TextPrimary,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Medium,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.SemiBold,
                                         fontFamily = FontFamily.Monospace
                                     )
                                 }
@@ -636,32 +615,32 @@ private fun ConsolePanel(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
                             "❯",
                             color = Cyan,
-                            fontSize = 14.sp,
+                            fontSize = 16.sp,
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(end = 6.dp)
+                            modifier = Modifier.padding(end = 8.dp)
                         )
 
                         OutlinedTextField(
                             value = inputText,
                             onValueChange = { inputText = it },
-                            modifier = Modifier.weight(1f).height(40.dp),
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
                             placeholder = {
                                 Text(
                                     "type input...",
-                                    fontSize = 12.sp,
+                                    fontSize = 14.sp,
                                     fontFamily = FontFamily.Monospace,
                                     color = TextDim
                                 )
                             },
                             textStyle = androidx.compose.ui.text.TextStyle(
-                                fontSize = 13.sp,
+                                fontSize = 15.sp,
                                 fontFamily = FontFamily.Monospace,
                                 color = TextPrimary
                             ),
@@ -676,25 +655,32 @@ private fun ConsolePanel(
                                 }
                             ),
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = Cyan.copy(alpha = .4f),
+                                focusedBorderColor = Cyan.copy(alpha = .5f),
                                 unfocusedBorderColor = Border.copy(alpha = .3f),
-                                cursorColor = Cyan
+                                cursorColor = Cyan,
+                                focusedContainerColor = Color(0xFF0A0A14),
+                                unfocusedContainerColor = Color(0xFF0A0A14)
                             ),
-                            shape = RoundedCornerShape(8.dp)
+                            shape = RoundedCornerShape(10.dp)
                         )
 
-                        Spacer(Modifier.width(6.dp))
+                        Spacer(Modifier.width(8.dp))
 
-                        IconButton(
+                        Surface(
                             onClick = {
                                 if (inputText.isNotBlank()) {
                                     onSendInput(inputText.trim())
                                     inputText = ""
                                 }
                             },
-                            modifier = Modifier.size(34.dp)
+                            modifier = Modifier.size(42.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            color = Cyan.copy(alpha = .15f),
+                            border = BorderStroke(0.5.dp, Cyan.copy(alpha = .3f))
                         ) {
-                            Icon(Icons.Filled.Send, null, tint = Cyan, modifier = Modifier.size(18.dp))
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                Icon(Icons.Filled.Send, null, tint = Cyan, modifier = Modifier.size(20.dp))
+                            }
                         }
                     }
                 }

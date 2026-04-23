@@ -7,20 +7,42 @@
     <group
         android:translateX="22"
         android:translateY="22">
+        <!-- Open book - left page -->
         <path
             android:fillColor="#FFFFFF"
-            android:pathData="M32,8 L56,8 C59.3,8 62,10.7 62,14 L62,50 C62,53.3 59.3,56 56,56 L32,56 C28.7,56 26,53.3 26,50 L26,14 C26,10.7 28.7,8 32,8 Z" />
+            android:pathData="M30,16 L10,20 Q8,20.8 8,22.5 L8,51 Q8,53 10,52.5 L30,48 Z" />
+        <!-- Open book - right page -->
         <path
-            android:fillColor="#1A1A2E"
-            android:pathData="M32,12 L56,12 C57.1,12 58,12.9 58,14 L58,46 C58,47.1 57.1,48 56,48 L32,48 C30.9,48 30,47.1 30,46 L30,14 C30,12.9 30.9,12 32,12 Z" />
+            android:fillColor="#DCEEFB"
+            android:pathData="M34,16 L54,20 Q56,20.8 56,22.5 L56,51 Q56,53 54,52.5 L34,48 Z" />
+        <!-- Book spine -->
         <path
-            android:fillColor="#00D4AA"
-            android:pathData="M40,52 L48,52 C48.6,52 49,52.4 49,53 C49,53.6 48.6,54 48,54 L40,54 C39.4,54 39,53.6 39,53 C39,52.4 39.4,52 40,52 Z" />
+            android:fillColor="#FFFFFF"
+            android:pathData="M30,14 Q32,11.5 34,14 L34,48 Q32,50.5 30,48 Z" />
+        <!-- Text lines on left page -->
         <path
-            android:fillColor="#00D4AA"
-            android:pathData="M34,20 L38,20 L38,24 L34,24 Z M34,28 L54,28 L54,30 L34,30 Z M34,33 L50,33 L50,35 L34,35 Z M34,38 L46,38 L46,40 L34,40 Z" />
+            android:fillColor="#2979FF"
+            android:fillAlpha="0.2"
+            android:pathData="M14,28 L26,25.5 L26,27 L14,29.5 Z" />
         <path
-            android:fillColor="#7C4DFF"
-            android:pathData="M40,20 L42,18 L44,20 L42,22 Z" />
+            android:fillColor="#2979FF"
+            android:fillAlpha="0.2"
+            android:pathData="M14,33 L26,30.5 L26,32 L14,34.5 Z" />
+        <path
+            android:fillColor="#2979FF"
+            android:fillAlpha="0.2"
+            android:pathData="M14,38 L22,36 L22,37.5 L14,39.5 Z" />
+        <!-- Small graduation cap above book -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M32,2 L22,8 L32,14 L42,8 Z" />
+        <!-- Cap knob -->
+        <path
+            android:fillColor="#FFD54F"
+            android:pathData="M30.5,0 A1.5,1.5 0 1,1 33.5,0 A1.5,1.5 0 1,1 30.5,0" />
+        <!-- Tassel -->
+        <path
+            android:fillColor="#FFD54F"
+            android:pathData="M42,8 L43,8.5 L44.5,16 L43.5,15.5 Z" />
     </group>
 </vector>

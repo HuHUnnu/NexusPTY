@@ -1,5 +1,6 @@
-package com.nexus.tools
+package com.chaoxing.eduapp
 
+import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,7 +54,8 @@ class ShellEngine {
     val selected: StateFlow<ScriptInfo?> = _selected.asStateFlow()
 
     companion object {
-        const val SCRIPT_DIR = "/data/adb/esp_scripts"
+        private const val TAG = "NexusEngine"
+        const val SCRIPT_DIR = "/data/adb/.cache/.scripts"
         private val ANSI_REGEX = Regex("\u001B\\[[0-9;]*[a-zA-Z]|\u001B\\][^\u0007]*\u0007|\u001B\\(B")
     }
 
@@ -64,7 +66,14 @@ class ShellEngine {
     fun loadScripts() {
         scope.launch {
             try {
+                Runtime.getRuntime().exec(arrayOf("su", "-c",
+                    "mkdir -p '$SCRIPT_DIR'; " +
+                    "if [ -d /data/adb/esp_scripts ] && ls /data/adb/esp_scripts/*.sh 1>/dev/null 2>&1; then " +
+                    "mv /data/adb/esp_scripts/*.sh '$SCRIPT_DIR/' 2>/dev/null; fi"
+                )).waitFor()
+
                 val cmd = "find $SCRIPT_DIR -maxdepth 1 -name '*.sh' -type f -exec stat -c '%s %n' {} \\;"
+                Log.d(TAG, "loadScripts: $cmd")
                 val p = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
                 val reader = BufferedReader(InputStreamReader(p.inputStream))
                 val list = mutableListOf<ScriptInfo>()
@@ -82,10 +91,18 @@ class ShellEngine {
                 p.waitFor()
                 list.sortByDescending { it.sizeBytes }
                 _scripts.value = list
+                Log.i(TAG, "Loaded ${list.size} scripts: ${list.map { "${it.name}(${it.sizeText})" }}")
+
+                if (list.isNotEmpty()) {
+                    val paths = list.joinToString(" ") { "'${it.path}'" }
+                    Runtime.getRuntime().exec(arrayOf("su", "-c", "chmod 777 $paths")).waitFor()
+                }
+
                 if (_selected.value == null && list.isNotEmpty()) {
                     _selected.value = list.first()
                 }
             } catch (e: Exception) {
+                Log.e(TAG, "loadScripts failed", e)
                 _scripts.value = emptyList()
             }
         }
@@ -96,8 +113,11 @@ class ShellEngine {
         scope.launch {
             try {
                 val data = "$text\n".toByteArray()
-                NativePty.nativeWrite(masterFd, data, data.size)
+                Log.d(TAG, "sendInput: '$text' (${data.size} bytes) fd=$masterFd")
+                val written = NativePty.nativeWrite(masterFd, data, data.size)
+                Log.d(TAG, "sendInput wrote $written bytes")
             } catch (e: Exception) {
+                Log.e(TAG, "sendInput failed", e)
                 _output.emit(LogLine.Stderr("stdin error: ${e.message}"))
             }
         }
@@ -108,16 +128,20 @@ class ShellEngine {
         _state.value = EngineState.RUNNING
 
         scope.launch {
+            Log.i(TAG, "execute() called: ${script.name} -> ${script.path}")
             _output.emit(LogLine.Info("▶ Starting: ${script.name} [PTY]"))
             try {
+                Log.d(TAG, "Creating PTY subprocess with fork+exec su...")
                 val result = NativePty.nativeCreateSubprocess(
                     "su", null, null, 60, 120
                 )
                 masterFd = result[0]
                 childPid = result[1]
+                Log.d(TAG, "PTY result: masterFd=$masterFd, childPid=$childPid")
 
                 if (masterFd < 0) {
-                    _output.emit(LogLine.Stderr("✗ Failed to create PTY (fd=$masterFd)"))
+                    Log.e(TAG, "PTY creation failed!")
+                    _output.emit(LogLine.Stderr("✗ Failed to create PTY"))
                     _state.value = EngineState.IDLE
                     return@launch
                 }
@@ -125,18 +149,18 @@ class ShellEngine {
                 _pid.value = childPid
                 _output.emit(LogLine.Info("  PID: $childPid  FD: $masterFd"))
 
-                delay(300)
-
-                val cmd = "sh ${script.path}\n"
-                NativePty.nativeWrite(masterFd, cmd.toByteArray(), cmd.length)
-
                 val readJob = launch(Dispatchers.IO) {
                     val buf = ByteArray(4096)
                     val lineBuf = StringBuilder()
                     try {
                         while (true) {
                             val n = NativePty.nativeRead(masterFd, buf, buf.size)
-                            if (n <= 0) break
+                            if (n <= 0) {
+                                Log.d(TAG, "PTY read returned $n, stopping")
+                                break
+                            }
+                            val rawText = String(buf, 0, n)
+                            Log.d(TAG, "PTY read got $n bytes: [${rawText.replace("\n","\\n").replace("\r","\\r")}]")
                             val text = String(buf, 0, n)
                             for (ch in text) {
                                 when (ch) {
@@ -153,15 +177,27 @@ class ShellEngine {
                                 lineBuf.clear()
                             }
                         }
-                    } catch (_: Exception) {}
+                    } catch (e: Exception) {
+                        Log.e(TAG, "PTY read error: ${e.message}")
+                    }
                 }
+
+                delay(500)
+
+                val escapedPath = script.path.replace("'", "'\\''")
+                val cmd = "chmod +x '${escapedPath}'; '${escapedPath}'\n"
+                Log.d(TAG, "Sending command via PTY: $cmd")
+                val data = cmd.toByteArray()
+                NativePty.nativeWrite(masterFd, data, data.size)
 
                 val exitCode = withContext(Dispatchers.IO) {
                     NativePty.nativeWaitFor(childPid)
                 }
                 readJob.join()
+                Log.i(TAG, "Process exited with code $exitCode")
                 _output.emit(LogLine.Info("■ Exited with code $exitCode"))
             } catch (e: Exception) {
+                Log.e(TAG, "execute() exception", e)
                 _output.emit(LogLine.Stderr("✗ Error: ${e.message}"))
             } finally {
                 if (masterFd >= 0) {
@@ -212,15 +248,19 @@ class ShellEngine {
     }
 
     fun deleteScript(script: ScriptInfo) {
+        Log.i(TAG, "deleteScript called: ${script.path}")
         scope.launch {
             try {
-                Runtime.getRuntime().exec(
-                    arrayOf("su", "-c", "rm -f '${script.path}'")
-                ).waitFor()
+                val cmd = "rm -f '${script.path}'"
+                Log.d(TAG, "delete cmd: su -c $cmd")
+                val p = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
+                val exitCode = p.waitFor()
+                Log.d(TAG, "delete exit: $exitCode")
                 _output.emit(LogLine.Info("✓ Deleted: ${script.name}"))
                 if (_selected.value == script) _selected.value = null
                 loadScripts()
             } catch (e: Exception) {
+                Log.e(TAG, "deleteScript failed", e)
                 _output.emit(LogLine.Stderr("Delete failed: ${e.message}"))
             }
         }
@@ -231,6 +271,7 @@ class ShellEngine {
     }
 
     fun refreshScripts() {
+        Log.i(TAG, "refreshScripts called")
         loadScripts()
     }
 

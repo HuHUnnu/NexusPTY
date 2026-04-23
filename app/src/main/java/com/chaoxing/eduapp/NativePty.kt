@@ -1,4 +1,4 @@
-package com.nexus.tools
+package com.chaoxing.eduapp
 
 object NativePty {
     init {
