@@ -2,7 +2,7 @@ package com.chaoxing.eduapp
 
 object NativePty {
     init {
-        System.loadLibrary("nexuspty")
+        System.loadLibrary("educore")
     }
 
     /**

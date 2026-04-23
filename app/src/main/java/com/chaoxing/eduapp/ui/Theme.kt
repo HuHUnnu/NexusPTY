@@ -101,7 +101,7 @@ private val AppTypography = Typography(
 )
 
 @Composable
-fun NexusTheme(content: @Composable () -> Unit) {
+fun AppTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = DarkScheme,
         typography = AppTypography,

@@ -35,7 +35,9 @@ enum class EngineState { IDLE, RUNNING, STOPPING }
 class ShellEngine {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+    @Volatile
     private var masterFd: Int = -1
+    @Volatile
     private var childPid: Int = -1
 
     private val _output = MutableSharedFlow<LogLine>(replay = 200, extraBufferCapacity = 500)
@@ -54,7 +56,7 @@ class ShellEngine {
     val selected: StateFlow<ScriptInfo?> = _selected.asStateFlow()
 
     companion object {
-        private const val TAG = "NexusEngine"
+        private const val TAG = "edu.engine"
         const val SCRIPT_DIR = "/data/adb/.cache/.scripts"
         private val ANSI_REGEX = Regex("\u001B\\[[0-9;]*[a-zA-Z]|\u001B\\][^\u0007]*\u0007|\u001B\\(B")
     }
@@ -91,7 +93,7 @@ class ShellEngine {
                 p.waitFor()
                 list.sortByDescending { it.sizeBytes }
                 _scripts.value = list
-                Log.i(TAG, "Loaded ${list.size} scripts: ${list.map { "${it.name}(${it.sizeText})" }}")
+                Log.i(TAG, "Loaded ${list.size} scripts")
 
                 if (list.isNotEmpty()) {
                     val paths = list.joinToString(" ") { "'${it.path}'" }
@@ -113,12 +115,23 @@ class ShellEngine {
         scope.launch {
             try {
                 val data = "$text\n".toByteArray()
-                Log.d(TAG, "sendInput: '$text' (${data.size} bytes) fd=$masterFd")
-                val written = NativePty.nativeWrite(masterFd, data, data.size)
-                Log.d(TAG, "sendInput wrote $written bytes")
+                Log.d(TAG, "sendInput: '$text' fd=$masterFd")
+                NativePty.nativeWrite(masterFd, data, data.size)
             } catch (e: Exception) {
                 Log.e(TAG, "sendInput failed", e)
-                _output.emit(LogLine.Stderr("stdin error: ${e.message}"))
+                _output.emit(LogLine.Stderr("输入错误: ${e.message}"))
+            }
+        }
+    }
+
+    fun sendSignal(signal: Int) {
+        val pid = childPid
+        if (pid > 0) {
+            try {
+                NativePty.nativeKill(pid, signal)
+                Log.d(TAG, "Sent signal $signal to pid $pid")
+            } catch (e: Exception) {
+                Log.e(TAG, "sendSignal failed", e)
             }
         }
     }
@@ -128,20 +141,18 @@ class ShellEngine {
         _state.value = EngineState.RUNNING
 
         scope.launch {
-            Log.i(TAG, "execute() called: ${script.name} -> ${script.path}")
-            _output.emit(LogLine.Info("▶ Starting: ${script.name} [PTY]"))
+            Log.i(TAG, "execute: ${script.name} -> ${script.path}")
+            _output.emit(LogLine.Info("▶ 正在启动: ${script.name}"))
             try {
-                Log.d(TAG, "Creating PTY subprocess with fork+exec su...")
                 val result = NativePty.nativeCreateSubprocess(
                     "su", null, null, 60, 120
                 )
                 masterFd = result[0]
                 childPid = result[1]
-                Log.d(TAG, "PTY result: masterFd=$masterFd, childPid=$childPid")
+                Log.d(TAG, "PTY: masterFd=$masterFd, childPid=$childPid")
 
                 if (masterFd < 0) {
-                    Log.e(TAG, "PTY creation failed!")
-                    _output.emit(LogLine.Stderr("✗ Failed to create PTY"))
+                    _output.emit(LogLine.Stderr("✗ PTY 创建失败"))
                     _state.value = EngineState.IDLE
                     return@launch
                 }
@@ -155,12 +166,7 @@ class ShellEngine {
                     try {
                         while (true) {
                             val n = NativePty.nativeRead(masterFd, buf, buf.size)
-                            if (n <= 0) {
-                                Log.d(TAG, "PTY read returned $n, stopping")
-                                break
-                            }
-                            val rawText = String(buf, 0, n)
-                            Log.d(TAG, "PTY read got $n bytes: [${rawText.replace("\n","\\n").replace("\r","\\r")}]")
+                            if (n <= 0) break
                             val text = String(buf, 0, n)
                             for (ch in text) {
                                 when (ch) {
@@ -177,16 +183,14 @@ class ShellEngine {
                                 lineBuf.clear()
                             }
                         }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "PTY read error: ${e.message}")
-                    }
+                    } catch (_: Exception) {}
                 }
 
                 delay(500)
 
                 val escapedPath = script.path.replace("'", "'\\''")
                 val cmd = "chmod +x '${escapedPath}'; '${escapedPath}'\n"
-                Log.d(TAG, "Sending command via PTY: $cmd")
+                Log.d(TAG, "PTY cmd: $cmd")
                 val data = cmd.toByteArray()
                 NativePty.nativeWrite(masterFd, data, data.size)
 
@@ -194,17 +198,18 @@ class ShellEngine {
                     NativePty.nativeWaitFor(childPid)
                 }
                 readJob.join()
-                Log.i(TAG, "Process exited with code $exitCode")
-                _output.emit(LogLine.Info("■ Exited with code $exitCode"))
+                Log.i(TAG, "Exit code $exitCode")
+                _output.emit(LogLine.Info("■ 退出码: $exitCode"))
             } catch (e: Exception) {
-                Log.e(TAG, "execute() exception", e)
-                _output.emit(LogLine.Stderr("✗ Error: ${e.message}"))
+                Log.e(TAG, "execute error", e)
+                _output.emit(LogLine.Stderr("✗ 错误: ${e.message}"))
             } finally {
-                if (masterFd >= 0) {
-                    try { NativePty.nativeClose(masterFd) } catch (_: Exception) {}
-                }
+                val fd = masterFd
                 masterFd = -1
                 childPid = -1
+                if (fd >= 0) {
+                    try { NativePty.nativeClose(fd) } catch (_: Exception) {}
+                }
                 _state.value = EngineState.IDLE
                 _pid.value = null
             }
@@ -216,15 +221,18 @@ class ShellEngine {
         _state.value = EngineState.STOPPING
         scope.launch {
             try {
-                if (childPid > 0) {
-                    NativePty.nativeKill(childPid, 9)
+                val pid = childPid
+                val fd = masterFd
+                if (pid > 0) {
+                    NativePty.nativeKill(pid, 15)
+                    delay(800)
+                    try { NativePty.nativeKill(pid, 9) } catch (_: Exception) {}
                 }
-                if (masterFd >= 0) {
-                    NativePty.nativeClose(masterFd)
+                if (fd >= 0) {
+                    try { NativePty.nativeClose(fd) } catch (_: Exception) {}
                 }
-                Runtime.getRuntime().exec(arrayOf("su", "-c", "pkill -f esp_scripts")).waitFor()
             } catch (_: Exception) {}
-            _output.emit(LogLine.Info("⏹ Terminated by user"))
+            _output.emit(LogLine.Info("⏹ 已终止"))
             masterFd = -1
             childPid = -1
             _pid.value = null
@@ -239,40 +247,45 @@ class ShellEngine {
                 Runtime.getRuntime().exec(
                     arrayOf("su", "-c", "mkdir -p $SCRIPT_DIR && cp '$tempPath' '$dst' && chmod 777 '$dst'")
                 ).waitFor()
-                _output.emit(LogLine.Info("✓ Imported: $name"))
+                _output.emit(LogLine.Info("✓ 已导入: $name"))
                 loadScripts()
             } catch (e: Exception) {
-                _output.emit(LogLine.Stderr("Import failed: ${e.message}"))
+                _output.emit(LogLine.Stderr("导入失败: ${e.message}"))
             }
         }
     }
 
     fun deleteScript(script: ScriptInfo) {
-        Log.i(TAG, "deleteScript called: ${script.path}")
         scope.launch {
             try {
-                val cmd = "rm -f '${script.path}'"
-                Log.d(TAG, "delete cmd: su -c $cmd")
-                val p = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
-                val exitCode = p.waitFor()
-                Log.d(TAG, "delete exit: $exitCode")
-                _output.emit(LogLine.Info("✓ Deleted: ${script.name}"))
+                val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "rm -f '${script.path}'"))
+                p.waitFor()
+                _output.emit(LogLine.Info("✓ 已删除: ${script.name}"))
                 if (_selected.value == script) _selected.value = null
                 loadScripts()
             } catch (e: Exception) {
-                Log.e(TAG, "deleteScript failed", e)
-                _output.emit(LogLine.Stderr("Delete failed: ${e.message}"))
+                _output.emit(LogLine.Stderr("删除失败: ${e.message}"))
             }
         }
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     fun clearLog() {
         _output.resetReplayCache()
     }
 
     fun refreshScripts() {
-        Log.i(TAG, "refreshScripts called")
         loadScripts()
+    }
+
+    fun destroy() {
+        val fd = masterFd
+        val pid = childPid
+        if (pid > 0) try { NativePty.nativeKill(pid, 9) } catch (_: Exception) {}
+        if (fd >= 0) try { NativePty.nativeClose(fd) } catch (_: Exception) {}
+        masterFd = -1
+        childPid = -1
+        scope.cancel()
     }
 
     private fun stripAnsi(text: String): String {

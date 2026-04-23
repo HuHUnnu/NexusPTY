@@ -1,7 +1,9 @@
 package com.chaoxing.eduapp
 
+import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -19,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -32,7 +35,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -40,6 +47,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.chaoxing.eduapp.ui.*
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -50,19 +58,22 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            NexusTheme {
-                NexusApp()
+            AppTheme {
+                MainScreen()
             }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun NexusApp() {
-    val engine = remember { ShellEngine() }
+fun MainScreen() {
+    val vm: AppViewModel = viewModel()
+    val engine = vm.engine
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val clipboardManager = LocalClipboardManager.current
+    val haptic = LocalHapticFeedback.current
 
     val scripts by engine.scripts.collectAsState()
     val selected by engine.selected.collectAsState()
@@ -72,6 +83,14 @@ fun NexusApp() {
     var logLines by remember { mutableStateOf<List<LogLine>>(emptyList()) }
     val logListState = rememberLazyListState()
     var consoleExpanded by remember { mutableStateOf(false) }
+    var scriptToDelete by remember { mutableStateOf<ScriptInfo?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+    var showSettings by remember { mutableStateOf(false) }
+
+    val prefs = remember { context.getSharedPreferences("edu_cfg", Context.MODE_PRIVATE) }
+    var fontSize by remember { mutableIntStateOf(prefs.getInt("font_size", 11)) }
+    var autoScroll by remember { mutableStateOf(prefs.getBoolean("auto_scroll", true)) }
+    var hapticEnabled by remember { mutableStateOf(prefs.getBoolean("haptic", true)) }
 
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
@@ -82,22 +101,39 @@ fun NexusApp() {
             val name = uri.lastPathSegment?.substringAfterLast('/')?.let {
                 if (it.endsWith(".sh")) it else "$it.sh"
             } ?: "imported_${System.currentTimeMillis()}.sh"
-
             val tmpFile = java.io.File(context.cacheDir, name)
             cr.openInputStream(uri)?.use { input ->
                 tmpFile.outputStream().use { output -> input.copyTo(output) }
             }
             engine.importScript(name, tmpFile.absolutePath)
-        } catch (e: Exception) {
-            scope.launch {
-                engine.output.let { /* swallow */ }
+        } catch (_: Exception) {}
+    }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri: Uri? ->
+        uri ?: return@rememberLauncherForActivityResult
+        try {
+            val sdf = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
+            val text = logLines.joinToString("\n") { line ->
+                val prefix = when (line) {
+                    is LogLine.Stdout -> "OUT"
+                    is LogLine.Stderr -> "ERR"
+                    is LogLine.Info -> "INF"
+                    is LogLine.Stdin -> "IN "
+                }
+                "[${sdf.format(Date(line.timestamp))}] $prefix  ${line.text}"
             }
+            context.contentResolver.openOutputStream(uri)?.use { os ->
+                os.write(text.toByteArray())
+            }
+            Toast.makeText(context, "日志已导出", Toast.LENGTH_SHORT).show()
+        } catch (_: Exception) {
+            Toast.makeText(context, "导出失败", Toast.LENGTH_SHORT).show()
         }
     }
 
-    LaunchedEffect(Unit) {
-        engine.loadScripts()
-    }
+    LaunchedEffect(Unit) { engine.loadScripts() }
 
     LaunchedEffect(Unit) {
         engine.output.collect { line ->
@@ -108,13 +144,61 @@ fun NexusApp() {
     }
 
     LaunchedEffect(logLines.size) {
-        if (logLines.isNotEmpty()) {
+        if (logLines.isNotEmpty() && autoScroll) {
             logListState.animateScrollToItem(logLines.lastIndex)
         }
     }
 
+    val filteredScripts = remember(scripts, searchQuery) {
+        if (searchQuery.isBlank()) scripts
+        else scripts.filter { it.name.contains(searchQuery, ignoreCase = true) }
+    }
+
     val isRunning = engineState == EngineState.RUNNING
     val isStopping = engineState == EngineState.STOPPING
+
+    // ── Delete confirmation ──
+    scriptToDelete?.let { script ->
+        AlertDialog(
+            onDismissRequest = { scriptToDelete = null },
+            title = { Text("确认删除") },
+            text = { Text("确定要删除「${script.name}」吗？\n此操作不可恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    engine.deleteScript(script)
+                    scriptToDelete = null
+                }) { Text("删除", color = Red) }
+            },
+            dismissButton = {
+                TextButton(onClick = { scriptToDelete = null }) { Text("取消") }
+            },
+            containerColor = SurfaceElevated,
+            titleContentColor = TextPrimary,
+            textContentColor = TextSecondary
+        )
+    }
+
+    // ── Settings dialog ──
+    if (showSettings) {
+        SettingsDialog(
+            fontSize = fontSize,
+            autoScroll = autoScroll,
+            hapticEnabled = hapticEnabled,
+            onFontSizeChange = {
+                fontSize = it
+                prefs.edit().putInt("font_size", it).apply()
+            },
+            onAutoScrollChange = {
+                autoScroll = it
+                prefs.edit().putBoolean("auto_scroll", it).apply()
+            },
+            onHapticChange = {
+                hapticEnabled = it
+                prefs.edit().putBoolean("haptic", it).apply()
+            },
+            onDismiss = { showSettings = false }
+        )
+    }
 
     Scaffold(
         containerColor = SurfaceDark,
@@ -130,16 +214,22 @@ fun NexusApp() {
                 scriptCount = scripts.size,
                 engineState = engineState,
                 pid = pid,
-                onRefresh = { engine.refreshScripts() },
-                onImport = { filePicker.launch("*/*") }
+                onRefresh = {
+                    if (hapticEnabled) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    engine.refreshScripts()
+                },
+                onImport = { filePicker.launch("*/*") },
+                onSettings = { showSettings = true }
             )
 
             if (!consoleExpanded) {
                 ScriptPanel(
-                    scripts = scripts,
+                    scripts = filteredScripts,
                     selected = selected,
+                    searchQuery = searchQuery,
+                    onSearchChange = { searchQuery = it },
                     onSelect = { engine.selectScript(it) },
-                    onDelete = { engine.deleteScript(it) },
+                    onDelete = { scriptToDelete = it },
                     modifier = Modifier.weight(1f)
                 )
             }
@@ -149,9 +239,20 @@ fun NexusApp() {
                 listState = logListState,
                 expanded = consoleExpanded,
                 isRunning = isRunning,
+                fontSize = fontSize,
                 onToggleExpand = { consoleExpanded = !consoleExpanded },
                 onClear = { logLines = emptyList(); engine.clearLog() },
                 onSendInput = { engine.sendInput(it) },
+                onSendSignal = { sig -> engine.sendSignal(sig) },
+                onCopyLine = { text ->
+                    clipboardManager.setText(AnnotatedString(text))
+                    Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+                },
+                onExport = {
+                    val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+                    exportLauncher.launch("log_$ts.txt")
+                },
+                hapticEnabled = hapticEnabled,
                 modifier = if (consoleExpanded) Modifier.weight(1f) else Modifier.height(300.dp)
             )
 
@@ -160,12 +261,20 @@ fun NexusApp() {
                 canStop = isRunning,
                 isStopping = isStopping,
                 selectedName = selected?.name,
-                onExecute = { selected?.let { engine.execute(it) } },
-                onStop = { engine.stop() }
+                onExecute = {
+                    if (hapticEnabled) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    selected?.let { engine.execute(it) }
+                },
+                onStop = {
+                    if (hapticEnabled) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    engine.stop()
+                }
             )
         }
     }
 }
+
+// ─────────────────────────────── Header ───────────────────────────────
 
 @Composable
 private fun AppHeader(
@@ -173,7 +282,8 @@ private fun AppHeader(
     engineState: EngineState,
     pid: Int?,
     onRefresh: () -> Unit,
-    onImport: () -> Unit
+    onImport: () -> Unit,
+    onSettings: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -183,7 +293,7 @@ private fun AppHeader(
                     colors = listOf(Cyan.copy(alpha = .06f), Color.Transparent)
                 )
             )
-            .padding(start = 20.dp, end = 8.dp, top = 12.dp, bottom = 8.dp)
+            .padding(start = 20.dp, end = 4.dp, top = 12.dp, bottom = 8.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -210,25 +320,28 @@ private fun AppHeader(
             }
 
             IconButton(onClick = onImport) {
-                Icon(Icons.Filled.Add, contentDescription = "Import", tint = Cyan, modifier = Modifier.size(22.dp))
+                Icon(Icons.Filled.Add, null, tint = Cyan, modifier = Modifier.size(22.dp))
             }
             IconButton(onClick = onRefresh) {
-                Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = TextSecondary, modifier = Modifier.size(20.dp))
+                Icon(Icons.Filled.Refresh, null, tint = TextSecondary, modifier = Modifier.size(20.dp))
+            }
+            IconButton(onClick = onSettings) {
+                Icon(Icons.Outlined.Settings, null, tint = TextSecondary, modifier = Modifier.size(20.dp))
             }
         }
 
         Spacer(Modifier.height(10.dp))
 
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().padding(end = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            ChipStatus("$scriptCount scripts", Icons.Outlined.Folder, Purple)
+            ChipStatus("$scriptCount 个脚本", Icons.Outlined.Folder, Purple)
             ChipStatus(
                 label = when (engineState) {
-                    EngineState.IDLE -> "Idle"
-                    EngineState.RUNNING -> "Running"
-                    EngineState.STOPPING -> "Stopping"
+                    EngineState.IDLE -> "空闲"
+                    EngineState.RUNNING -> "运行中"
+                    EngineState.STOPPING -> "终止中"
                 },
                 icon = when (engineState) {
                     EngineState.IDLE -> Icons.Outlined.RadioButtonUnchecked
@@ -285,10 +398,14 @@ private fun ChipStatus(
     }
 }
 
+// ─────────────────────────────── Script Panel ───────────────────────────────
+
 @Composable
 private fun ScriptPanel(
     scripts: List<ScriptInfo>,
     selected: ScriptInfo?,
+    searchQuery: String,
+    onSearchChange: (String) -> Unit,
     onSelect: (ScriptInfo) -> Unit,
     onDelete: (ScriptInfo) -> Unit,
     modifier: Modifier = Modifier
@@ -301,9 +418,43 @@ private fun ScriptPanel(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("SCRIPTS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-            Text("${scripts.size} loaded", style = MaterialTheme.typography.labelSmall, color = TextDim)
+            Text("脚本列表", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+            Text("已加载 ${scripts.size}", style = MaterialTheme.typography.labelSmall, color = TextDim)
         }
+
+        // ── Search bar ──
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = onSearchChange,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 8.dp)
+                .heightIn(min = 40.dp),
+            placeholder = {
+                Text("搜索脚本...", fontSize = 13.sp, color = TextDim)
+            },
+            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = TextPrimary),
+            singleLine = true,
+            leadingIcon = {
+                Icon(Icons.Filled.Search, null, tint = TextDim, modifier = Modifier.size(18.dp))
+            },
+            trailingIcon = {
+                if (searchQuery.isNotEmpty()) {
+                    IconButton(onClick = { onSearchChange("") }, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Filled.Clear, null, tint = TextDim, modifier = Modifier.size(16.dp))
+                    }
+                }
+            },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Cyan.copy(alpha = .4f),
+                unfocusedBorderColor = Border.copy(alpha = .3f),
+                cursorColor = Cyan,
+                focusedContainerColor = SurfaceCard,
+                unfocusedContainerColor = SurfaceCard
+            ),
+            shape = RoundedCornerShape(10.dp)
+        )
 
         if (scripts.isEmpty()) {
             Box(
@@ -313,10 +464,10 @@ private fun ScriptPanel(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Outlined.FolderOff, null, tint = TextDim, modifier = Modifier.size(48.dp))
                     Spacer(Modifier.height(12.dp))
-                    Text("No scripts found", style = MaterialTheme.typography.bodyMedium)
+                    Text("暂无脚本", style = MaterialTheme.typography.bodyMedium)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Tap + to import or place .sh in ${ShellEngine.SCRIPT_DIR}",
+                        "点击 + 导入脚本\n或将 .sh 文件放入 ${ShellEngine.SCRIPT_DIR}",
                         style = MaterialTheme.typography.labelSmall,
                         color = TextDim,
                         textAlign = TextAlign.Center,
@@ -394,10 +545,7 @@ private fun ScriptItem(
                     overflow = TextOverflow.Ellipsis
                 )
                 Spacer(Modifier.height(2.dp))
-                Text(
-                    script.sizeText,
-                    style = MaterialTheme.typography.labelSmall
-                )
+                Text(script.sizeText, style = MaterialTheme.typography.labelSmall)
             }
 
             Spacer(Modifier.width(4.dp))
@@ -437,18 +585,27 @@ private fun ScriptItem(
     }
 }
 
+// ─────────────────────────────── Console Panel ───────────────────────────────
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ConsolePanel(
     logLines: List<LogLine>,
     listState: androidx.compose.foundation.lazy.LazyListState,
     expanded: Boolean,
     isRunning: Boolean,
+    fontSize: Int,
     onToggleExpand: () -> Unit,
     onClear: () -> Unit,
     onSendInput: (String) -> Unit,
+    onSendSignal: (Int) -> Unit,
+    onCopyLine: (String) -> Unit,
+    onExport: () -> Unit,
+    hapticEnabled: Boolean,
     modifier: Modifier = Modifier
 ) {
     var inputText by remember { mutableStateOf("") }
+    val haptic = LocalHapticFeedback.current
 
     Surface(
         modifier = modifier
@@ -459,6 +616,7 @@ private fun ConsolePanel(
         border = BorderStroke(1.dp, Border.copy(alpha = .4f))
     ) {
         Column {
+            // ── Console title bar ──
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -477,7 +635,7 @@ private fun ConsolePanel(
                 }
 
                 Text(
-                    "console",
+                    "控制台",
                     modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
                     textAlign = TextAlign.Center,
                     style = MaterialTheme.typography.labelSmall,
@@ -488,13 +646,17 @@ private fun ConsolePanel(
                 Text(
                     "${logLines.size}",
                     fontSize = 10.sp, color = TextDim, fontFamily = FontFamily.Monospace,
-                    modifier = Modifier.padding(end = 8.dp)
+                    modifier = Modifier.padding(end = 4.dp)
                 )
 
+                IconButton(onClick = onExport, modifier = Modifier.size(24.dp)) {
+                    Icon(Icons.Outlined.SaveAlt, null, tint = TextDim, modifier = Modifier.size(15.dp))
+                }
+                Spacer(Modifier.width(2.dp))
                 IconButton(onClick = onClear, modifier = Modifier.size(24.dp)) {
                     Icon(Icons.Outlined.DeleteSweep, null, tint = TextDim, modifier = Modifier.size(15.dp))
                 }
-                Spacer(Modifier.width(4.dp))
+                Spacer(Modifier.width(2.dp))
                 IconButton(onClick = onToggleExpand, modifier = Modifier.size(24.dp)) {
                     Icon(
                         if (expanded) Icons.Filled.UnfoldLess else Icons.Filled.UnfoldMore,
@@ -505,6 +667,7 @@ private fun ConsolePanel(
 
             HorizontalDivider(color = Border.copy(alpha = .3f), thickness = 0.5.dp)
 
+            // ── Console body ──
             if (logLines.isEmpty()) {
                 Box(
                     modifier = Modifier.fillMaxWidth().weight(1f),
@@ -517,7 +680,7 @@ private fun ConsolePanel(
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "waiting for execution",
+                            "等待执行",
                             style = MaterialTheme.typography.labelSmall,
                             color = TextDim.copy(alpha = .5f)
                         )
@@ -547,26 +710,34 @@ private fun ConsolePanel(
                             is LogLine.Info -> "i"
                             is LogLine.Stdin -> ">"
                         }
-                        Row(modifier = Modifier.padding(vertical = 0.5.dp)) {
+                        Row(
+                            modifier = Modifier
+                                .padding(vertical = 0.5.dp)
+                                .combinedClickable(
+                                    onClick = {},
+                                    onLongClick = { onCopyLine(line.text) }
+                                )
+                        ) {
                             Text(
-                                ts, fontSize = 9.sp, fontFamily = FontFamily.Monospace,
+                                ts, fontSize = (fontSize - 2).sp, fontFamily = FontFamily.Monospace,
                                 color = TextDim.copy(alpha = .5f),
                                 modifier = Modifier.padding(end = 6.dp)
                             )
                             Text(
-                                prefix, fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                                prefix, fontSize = (fontSize - 1).sp, fontFamily = FontFamily.Monospace,
                                 color = color.copy(alpha = .5f),
                                 modifier = Modifier.width(10.dp)
                             )
                             Text(
-                                line.text, fontSize = 11.sp, fontFamily = FontFamily.Monospace,
-                                color = color, lineHeight = 15.sp
+                                line.text, fontSize = fontSize.sp, fontFamily = FontFamily.Monospace,
+                                color = color, lineHeight = (fontSize + 4).sp
                             )
                         }
                     }
                 }
             }
 
+            // ── Interactive input area (visible during execution) ──
             AnimatedVisibility(visible = isRunning) {
                 Column(
                     modifier = Modifier
@@ -575,6 +746,7 @@ private fun ConsolePanel(
                 ) {
                     HorizontalDivider(color = Border.copy(alpha = .2f), thickness = 0.5.dp)
 
+                    // ── Quick keys ──
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -582,17 +754,39 @@ private fun ConsolePanel(
                             .padding(horizontal = 8.dp, vertical = 6.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        val quickKeys = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "y", "n", "Enter")
+                        val quickKeys = listOf(
+                            "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
+                            "y", "n", "Tab", "Ctrl+C", "Enter"
+                        )
                         quickKeys.forEach { key ->
+                            val isSpecial = key in listOf("Enter", "Ctrl+C", "Tab")
+                            val isCtrlC = key == "Ctrl+C"
                             Surface(
                                 onClick = {
-                                    onSendInput(if (key == "Enter") "" else key)
+                                    if (hapticEnabled) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    when (key) {
+                                        "Enter" -> onSendInput("")
+                                        "Tab" -> {
+                                            val tab = "\t".toByteArray()
+                                            onSendInput("\t")
+                                        }
+                                        "Ctrl+C" -> onSendSignal(2)
+                                        else -> onSendInput(key)
+                                    }
                                 },
                                 shape = RoundedCornerShape(10.dp),
-                                color = if (key == "Enter") Cyan.copy(alpha = .15f) else SurfaceCard,
+                                color = when {
+                                    isCtrlC -> Red.copy(alpha = .12f)
+                                    key == "Enter" -> Cyan.copy(alpha = .15f)
+                                    else -> SurfaceCard
+                                },
                                 border = BorderStroke(
                                     0.5.dp,
-                                    if (key == "Enter") Cyan.copy(alpha = .3f) else Border.copy(alpha = .4f)
+                                    when {
+                                        isCtrlC -> Red.copy(alpha = .3f)
+                                        key == "Enter" -> Cyan.copy(alpha = .3f)
+                                        else -> Border.copy(alpha = .4f)
+                                    }
                                 ),
                                 modifier = Modifier.height(38.dp)
                             ) {
@@ -601,9 +795,13 @@ private fun ConsolePanel(
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Text(
-                                        key,
-                                        color = if (key == "Enter") Cyan else TextPrimary,
-                                        fontSize = 14.sp,
+                                        if (isCtrlC) "^C" else key,
+                                        color = when {
+                                            isCtrlC -> Red
+                                            key == "Enter" -> Cyan
+                                            else -> TextPrimary
+                                        },
+                                        fontSize = if (isSpecial) 12.sp else 14.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         fontFamily = FontFamily.Monospace
                                     )
@@ -612,6 +810,7 @@ private fun ConsolePanel(
                         }
                     }
 
+                    // ── Text input row ──
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -633,7 +832,7 @@ private fun ConsolePanel(
                             modifier = Modifier.weight(1f).heightIn(min = 48.dp),
                             placeholder = {
                                 Text(
-                                    "type input...",
+                                    "输入命令...",
                                     fontSize = 14.sp,
                                     fontFamily = FontFamily.Monospace,
                                     color = TextDim
@@ -668,6 +867,7 @@ private fun ConsolePanel(
 
                         Surface(
                             onClick = {
+                                if (hapticEnabled) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 if (inputText.isNotBlank()) {
                                     onSendInput(inputText.trim())
                                     inputText = ""
@@ -679,7 +879,7 @@ private fun ConsolePanel(
                             border = BorderStroke(0.5.dp, Cyan.copy(alpha = .3f))
                         ) {
                             Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                                Icon(Icons.Filled.Send, null, tint = Cyan, modifier = Modifier.size(20.dp))
+                                Icon(Icons.AutoMirrored.Filled.Send, null, tint = Cyan, modifier = Modifier.size(20.dp))
                             }
                         }
                     }
@@ -688,6 +888,8 @@ private fun ConsolePanel(
         }
     }
 }
+
+// ─────────────────────────────── Control Bar ───────────────────────────────
 
 @Composable
 private fun ControlBar(
@@ -714,7 +916,7 @@ private fun ControlBar(
         ) {
             if (selectedName != null) {
                 Text(
-                    "Selected: $selectedName",
+                    "已选择: $selectedName",
                     style = MaterialTheme.typography.labelSmall,
                     color = TextDim,
                     maxLines = 1,
@@ -741,7 +943,7 @@ private fun ControlBar(
                 ) {
                     Icon(Icons.Filled.PlayArrow, null, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Execute", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text("执行", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 }
 
                 OutlinedButton(
@@ -767,11 +969,136 @@ private fun ControlBar(
                     }
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        if (isStopping) "Stopping..." else "Terminate",
+                        if (isStopping) "终止中..." else "终止",
                         fontWeight = FontWeight.Bold, fontSize = 14.sp
                     )
                 }
             }
         }
     }
+}
+
+// ─────────────────────────────── Settings Dialog ───────────────────────────────
+
+@Composable
+private fun SettingsDialog(
+    fontSize: Int,
+    autoScroll: Boolean,
+    hapticEnabled: Boolean,
+    onFontSizeChange: (Int) -> Unit,
+    onAutoScrollChange: (Boolean) -> Unit,
+    onHapticChange: (Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.Settings, null, tint = Cyan, modifier = Modifier.size(22.dp))
+                Spacer(Modifier.width(10.dp))
+                Text("设置")
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                // ── Font size ──
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("控制台字号", color = TextPrimary, fontSize = 14.sp)
+                        Text("${fontSize}sp", color = Cyan, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    Slider(
+                        value = fontSize.toFloat(),
+                        onValueChange = { onFontSizeChange(it.toInt()) },
+                        valueRange = 9f..16f,
+                        steps = 6,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Cyan,
+                            activeTrackColor = Cyan,
+                            inactiveTrackColor = Border
+                        )
+                    )
+                }
+
+                HorizontalDivider(color = Border.copy(alpha = .3f))
+
+                // ── Auto scroll ──
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("自动滚动", color = TextPrimary, fontSize = 14.sp)
+                        Text("新输出时自动滚到底部", color = TextDim, fontSize = 11.sp)
+                    }
+                    Switch(
+                        checked = autoScroll,
+                        onCheckedChange = onAutoScrollChange,
+                        colors = SwitchDefaults.colors(checkedTrackColor = Cyan)
+                    )
+                }
+
+                HorizontalDivider(color = Border.copy(alpha = .3f))
+
+                // ── Haptic ──
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("触觉反馈", color = TextPrimary, fontSize = 14.sp)
+                        Text("按键时振动", color = TextDim, fontSize = 11.sp)
+                    }
+                    Switch(
+                        checked = hapticEnabled,
+                        onCheckedChange = onHapticChange,
+                        colors = SwitchDefaults.colors(checkedTrackColor = Cyan)
+                    )
+                }
+
+                HorizontalDivider(color = Border.copy(alpha = .3f))
+
+                // ── Script directory info ──
+                Column {
+                    Text("脚本存放目录", color = TextPrimary, fontSize = 14.sp)
+                    Spacer(Modifier.height(4.dp))
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = SurfaceCard,
+                        border = BorderStroke(0.5.dp, Border.copy(alpha = .3f))
+                    ) {
+                        Text(
+                            ShellEngine.SCRIPT_DIR,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = TextSecondary
+                        )
+                    }
+                }
+
+                // ── Version info ──
+                Text(
+                    "v3.0.0 · com.chaoxing.eduapp",
+                    fontSize = 10.sp,
+                    color = TextDim,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("完成", color = Cyan)
+            }
+        },
+        containerColor = SurfaceElevated,
+        titleContentColor = TextPrimary,
+        textContentColor = TextSecondary
+    )
 }
