@@ -104,6 +104,9 @@ fun MainScreen() {
     var fontSize by remember { mutableIntStateOf(prefs.getInt("font_size", 11)) }
     var autoScroll by remember { mutableStateOf(prefs.getBoolean("auto_scroll", true)) }
     var hapticEnabled by remember { mutableStateOf(prefs.getBoolean("haptic", true)) }
+    var suPath by remember { mutableStateOf(prefs.getString("su_path", "su") ?: "su") }
+
+    LaunchedEffect(suPath) { engine.suPath = suPath }
 
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
@@ -209,9 +212,11 @@ fun MainScreen() {
                 fontSize = fontSize,
                 autoScroll = autoScroll,
                 hapticEnabled = hapticEnabled,
+                suPath = suPath,
                 onFontSizeChange = { fontSize = it; prefs.edit().putInt("font_size", it).apply() },
                 onAutoScrollChange = { autoScroll = it; prefs.edit().putBoolean("auto_scroll", it).apply() },
-                onHapticChange = { hapticEnabled = it; prefs.edit().putBoolean("haptic", it).apply() }
+                onHapticChange = { hapticEnabled = it; prefs.edit().putBoolean("haptic", it).apply() },
+                onSuPathChange = { suPath = it; prefs.edit().putString("su_path", it).apply() }
             )
         }
     }
@@ -772,8 +777,9 @@ private fun ControlBar(
 
 @Composable
 private fun SettingsContent(
-    fontSize: Int, autoScroll: Boolean, hapticEnabled: Boolean,
-    onFontSizeChange: (Int) -> Unit, onAutoScrollChange: (Boolean) -> Unit, onHapticChange: (Boolean) -> Unit
+    fontSize: Int, autoScroll: Boolean, hapticEnabled: Boolean, suPath: String,
+    onFontSizeChange: (Int) -> Unit, onAutoScrollChange: (Boolean) -> Unit,
+    onHapticChange: (Boolean) -> Unit, onSuPathChange: (String) -> Unit
 ) {
     Column(
         Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 32.dp),
@@ -781,7 +787,35 @@ private fun SettingsContent(
     ) {
         Text("设置", style = MaterialTheme.typography.headlineMedium)
 
-        // ── Font size ──
+        Column {
+            Text("SU 路径", color = TextPrimary, fontSize = 14.sp)
+            Spacer(Modifier.height(2.dp))
+            Text("SKRoot 等非标准 root 需要指定自定义 su 二进制路径", color = TextDim, fontSize = 11.sp)
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = suPath, onValueChange = onSuPathChange,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp),
+                placeholder = { Text("su", fontSize = 13.sp, fontFamily = FontFamily.Monospace, color = TextDim) },
+                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, fontFamily = FontFamily.Monospace, color = TextPrimary),
+                singleLine = true,
+                leadingIcon = { Icon(Icons.Filled.Terminal, null, tint = Cyan, modifier = Modifier.size(18.dp)) },
+                trailingIcon = {
+                    if (suPath != "su") {
+                        IconButton(onClick = { onSuPathChange("su") }, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Filled.RestartAlt, null, tint = TextDim, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Cyan.copy(alpha = .4f), unfocusedBorderColor = Border.copy(alpha = .3f),
+                    cursorColor = Cyan, focusedContainerColor = SurfaceCard, unfocusedContainerColor = SurfaceCard
+                ),
+                shape = RoundedCornerShape(10.dp)
+            )
+        }
+
+        HorizontalDivider(color = Border.copy(alpha = .3f))
+
         Column {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("控制台字号", color = TextPrimary, fontSize = 14.sp)
@@ -819,7 +853,7 @@ private fun SettingsContent(
             }
         }
 
-        Text("v3.1.0 · com.chaoxing.eduapp", fontSize = 10.sp, color = TextDim,
+        Text("v3.2.0 · com.chaoxing.eduapp", fontSize = 10.sp, color = TextDim,
             textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
     }
 }

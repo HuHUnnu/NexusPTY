@@ -35,6 +35,8 @@ enum class EngineState { IDLE, RUNNING, STOPPING }
 class ShellEngine {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+    var suPath: String = "su"
+
     @Volatile
     private var masterFd: Int = -1
     @Volatile
@@ -68,7 +70,7 @@ class ShellEngine {
     fun loadScripts() {
         scope.launch {
             try {
-                Runtime.getRuntime().exec(arrayOf("su", "-c",
+                Runtime.getRuntime().exec(arrayOf(suPath, "-c",
                     "mkdir -p '$SCRIPT_DIR'; " +
                     "if [ -d /data/adb/esp_scripts ] && ls /data/adb/esp_scripts/*.sh 1>/dev/null 2>&1; then " +
                     "mv /data/adb/esp_scripts/*.sh '$SCRIPT_DIR/' 2>/dev/null; fi"
@@ -76,7 +78,7 @@ class ShellEngine {
 
                 val cmd = "find $SCRIPT_DIR -maxdepth 1 -name '*.sh' -type f -exec stat -c '%s %n' {} \\;"
                 Log.d(TAG, "loadScripts: $cmd")
-                val p = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
+                val p = Runtime.getRuntime().exec(arrayOf(suPath, "-c", cmd))
                 val reader = BufferedReader(InputStreamReader(p.inputStream))
                 val list = mutableListOf<ScriptInfo>()
                 var line = reader.readLine()
@@ -97,7 +99,7 @@ class ShellEngine {
 
                 if (list.isNotEmpty()) {
                     val paths = list.joinToString(" ") { "'${it.path}'" }
-                    Runtime.getRuntime().exec(arrayOf("su", "-c", "chmod 777 $paths")).waitFor()
+                    Runtime.getRuntime().exec(arrayOf(suPath, "-c", "chmod 755 $paths")).waitFor()
                 }
 
                 if (_selected.value == null && list.isNotEmpty()) {
@@ -145,7 +147,7 @@ class ShellEngine {
             _output.emit(LogLine.Info("▶ 正在启动: ${script.name}"))
             try {
                 val result = NativePty.nativeCreateSubprocess(
-                    "su", null, null, 60, 120
+                    suPath, null, null, 60, 120
                 )
                 masterFd = result[0]
                 childPid = result[1]
@@ -245,7 +247,7 @@ class ShellEngine {
             try {
                 val dst = "$SCRIPT_DIR/$name"
                 Runtime.getRuntime().exec(
-                    arrayOf("su", "-c", "mkdir -p $SCRIPT_DIR && cp '$tempPath' '$dst' && chmod 777 '$dst'")
+                    arrayOf(suPath, "-c", "mkdir -p $SCRIPT_DIR && cp '$tempPath' '$dst' && chmod 755 '$dst'")
                 ).waitFor()
                 _output.emit(LogLine.Info("✓ 已导入: $name"))
                 loadScripts()
@@ -258,7 +260,7 @@ class ShellEngine {
     fun deleteScript(script: ScriptInfo) {
         scope.launch {
             try {
-                val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "rm -f '${script.path}'"))
+                val p = Runtime.getRuntime().exec(arrayOf(suPath, "-c", "rm -f '${script.path}'"))
                 p.waitFor()
                 _output.emit(LogLine.Info("✓ 已删除: ${script.name}"))
                 if (_selected.value == script) _selected.value = null
